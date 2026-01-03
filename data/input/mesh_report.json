@@ -1,0 +1,46 @@
+{
+    "mesh_id": "msh_v99_final",
+    "topology": {
+        "cell_count": 12500000,
+        "face_count": 38000000,
+        "node_count": 4200000,
+        "type": "unstructured_polyhedral",
+        "has_enclosure": true, // Agent Check: External aero needs this
+        "has_boundary_layer_inflation": true, // Agent Check: Turbulent flow needs this
+        "inflation_layers": {
+            "count": 15,
+            "first_layer_height_m": 1.2e-5, // Agent Check: Y+ estimation
+            "growth_rate": 1.2
+        }
+    },
+    "quality_metrics": {
+        "orthogonal_quality": {
+            "min": 0.15,
+            "avg": 0.85,
+            "worst_element_id": 44021
+        },
+        "skewness": {
+            "max": 0.85,
+            "avg": 0.22,
+            "target": "< 0.90"
+        },
+        "aspect_ratio": {
+            "max": 120.0, // Agent Check: High is ok in boundary layer, bad in free stream
+            "avg": 12.5
+        },
+        "sicn": { // Signed Inverse Condition Number
+            "min": 0.45,
+            "description": "Measure of element non-degeneracy. <0.1 is failing."
+        },
+        "gamma_quality": {
+            "min": 0.32,
+            "description": "Gamma metric for polyhedral regularity. <0.2 is failing."
+        }
+    },
+    "zones": [
+        "inlet_main",
+        "outlet_exhaust",
+        "wall_outer",
+        "internal_fluid"
+    ]
+}

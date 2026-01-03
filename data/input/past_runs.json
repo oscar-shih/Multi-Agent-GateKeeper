@@ -1,0 +1,24 @@
+[
+    {
+        "job_id": "job_402",
+        "status": "CRASHED",
+        "failure_reason": "Divergence detected at iteration 540",
+        "config": {
+            "turbulence_model": "k-epsilon",
+            "time_step": 0.01,
+            "relaxation_factors": {
+                "pressure": 0.3,
+                "momentum": 0.7
+            }
+        },
+        "notes": "Similar geometry to current manifold. Failed due to aggressive momentum relaxation."
+    },
+    {
+        "job_id": "job_405",
+        "status": "SUCCESS",
+        "config": {
+            "turbulence_model": "k-omega",
+            "time_step": 0.005
+        }
+    }
+]

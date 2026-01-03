@@ -1,0 +1,88 @@
+{
+    "simulation_handbook": {
+        "section_1_flow_physics": {
+            "reynolds_number": {
+                "description": "Ratio of inertial forces to viscous forces. Determines if flow is Laminar (smooth) or Turbulent (chaotic).",
+                "formula": "Re = (density * velocity * characteristic_length) / dynamic_viscosity",
+                "variables": {
+                    "density": "kg/m^3",
+                    "velocity": "m/s",
+                    "characteristic_length": "Hydraulic diameter (m)",
+                    "dynamic_viscosity": "Pa·s"
+                },
+                "agent_hint": "The 'Physicist' must check if the chosen turbulence model is valid for the calculated Re."
+            },
+            "mach_number": {
+                "description": "Ratio of flow velocity to the speed of sound. Determines if compressibility effects matter.",
+                "formula": "Ma = velocity / speed_of_sound",
+                "variables": {
+                    "speed_of_sound": "approx 343 m/s for air at STP"
+                },
+                "agent_hint": "The 'Physicist' must ensure compressibility is enabled if Ma > 0.3."
+            },
+            "prandtl_number": {
+                "description": "Ratio of momentum diffusivity to thermal diffusivity.",
+                "formula": "Pr = (specific_heat * dynamic_viscosity) / thermal_conductivity",
+                "agent_hint": "Relevant for heat transfer simulations. If Pr << 1 or Pr >> 1, specific thermal boundary layers are required."
+            }
+        },
+        "section_2_numerics_and_stability": {
+            "courant_number_cfl": {
+                "description": "The 'Speed Limit' of the simulation. Represents how many mesh cells a fluid particle crosses in one time-step.",
+                "formula": "C = (velocity * time_step) / (characteristic_length / (cell_count^(1/3)))",
+                "note": "For explicit solvers, C must be < 1. For implicit, C can be higher (often 10-50) but affects accuracy.",
+                "agent_hint": "The 'Stabilizer' agent must use this to reject time-steps that are too aggressive for the mesh size."
+            },
+            "strouhal_number_frequency": {
+                "description": "Used to estimate the vortex shedding frequency in transient flows (like flow past a cylinder).",
+                "formula": "f = (St * velocity) / characteristic_length",
+                "variables": {
+                    "St": "Strouhal Number (approx 0.2 for many bluff bodies)",
+                    "f": "Shedding frequency (Hz)"
+                },
+                "agent_hint": "The 'Stabilizer' should check if the time_step is small enough to resolve this frequency (Nyquist criterion: freq_sampling > 2*f)."
+            }
+        },
+        "section_3_boundary_layer": {
+            "y_plus_estimation": {
+                "description": "Non-dimensional wall distance. Critical for turbulence modeling.",
+                "formula_steps": [
+                    "1. Skin Friction Coeff (Cf) ≈ 0.058 * (Re^(-0.2))",
+                    "2. Wall Shear Velocity (u_tau) = velocity * sqrt(Cf / 2)",
+                    "3. Y+ = (first_layer_height * u_tau * density) / dynamic_viscosity"
+                ],
+                "agent_hint": "The 'Physicist' must check Y+ against the model requirements (e.g., k-epsilon needs Y+ > 30; k-omega needs Y+ ~ 1)."
+            }
+        },
+        "section_4_mesh_quality_metrics": {
+            "aspect_ratio": {
+                "description": "Measure of element stretching.",
+                "formula": "AR = longest_edge / shortest_edge",
+                "agent_hint": "High AR is acceptable in boundary layers (flow is aligned) but bad in the free stream."
+            },
+            "skewness": {
+                "description": "Measure of how close a cell is to an equilateral/equiangular ideal.",
+                "formula": "Skew = (Ideal_Vol - Cell_Vol) / Ideal_Vol",
+                "range": "0 (Perfect) to 1 (Degenerate)",
+                "agent_hint": "The 'Geometer' should generally reject Skewness > 0.95."
+            },
+            "orthogonal_quality": {
+                "description": "Measure of alignment between the face normal vector and the vector connecting cell centroids.",
+                "range": "0 (Bad) to 1 (Perfect)",
+                "agent_hint": "The 'Geometer' should flag Orthogonal Quality < 0.1."
+            }
+        },
+        "section_5_resource_estimation": {
+            "memory_requirement": {
+                "description": "RAM usage estimation rule-of-thumb for Finite Volume solvers.",
+                "formula": "RAM_GB ≈ (cell_count / 1,000,000) * 1.5",
+                "agent_hint": "The 'Resource Manager' must check if the hardware has enough RAM."
+            },
+            "compute_cost_estimate": {
+                "description": "Rough cost calculation based on core-hours.",
+                "formula": "Cost = (cell_count / 1e6) * total_iterations * cost_per_m_cells_per_iter",
+                "agent_hint": "The 'Resource Manager' needs to reject jobs that exceed the user's credit balance."
+            }
+        }
+    }
+}
