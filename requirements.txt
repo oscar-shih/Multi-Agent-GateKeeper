@@ -1,0 +1,18 @@
+# Multi-agent orchestration
+langgraph>=0.2.40,<0.4.0
+
+# Google Gemini (Google Gen AI SDK)
+google-genai>=1.56.0,<2.0.0
+
+# Data models / validation (Pydantic v2)
+pydantic>=2.7.0,<3.0.0
+
+# CLI + env
+python-dotenv>=1.0.1,<2.0.0
+rich>=13.7.0,<14.0.0
+
+# Deterministic numeric utilities
+numpy>=1.26.0,<3.0.0
+
+# Testing
+pytest>=8.0.0,<9.0.0
