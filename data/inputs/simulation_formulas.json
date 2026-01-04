@@ -1,4 +1,13 @@
 {
+    "cfl": { 
+        "max_allowed": 50 
+    },
+    "cost_model": { 
+        "cost_per_m_cells_per_iter": 0.00002 
+    },
+    "runtime_model": {
+        "hours_per_m_cells_per_iter": 0.000001 
+    },
     "simulation_handbook": {
         "section_1_flow_physics": {
             "reynolds_number": {

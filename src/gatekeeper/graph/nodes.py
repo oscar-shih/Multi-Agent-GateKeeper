@@ -16,6 +16,7 @@ from gatekeeper.schemas import (
 )
 from gatekeeper.tools.cfl import compute_cfl_from_handbook
 from gatekeeper.tools.similarity import retrieve_similar_runs
+from gatekeeper.tools.cost import compute_resource_estimates
 
 # -----------------------------
 # Utilities: timebox + JSON parsing
@@ -170,31 +171,126 @@ def compute_cfl_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
         },
     }
 
-
 # -----------------------------
-# Node 3: cost + similarity (MVP placeholders; DO NOT overwrite CFL)
+# Node 3: deterministic metrics (cost/runtime placeholders removed; DO NOT overwrite CFL)
 # -----------------------------
 def precompute_metrics_node(state: Dict[str, Any]) -> Dict[str, Any]:
     _ensure_time(state)
 
     parsed = state["parsed"]
     mesh = parsed["mesh_report"]
+    sim = parsed["sim_config"]
+    formulas = parsed.get("formulas") or {}
 
     derived = dict(state.get("derived_metrics") or {})
 
-    # Keep CFL fields intact; only add missing placeholders
-    cell_count = float((mesh.get("topology") or {}).get("cell_count", 0) or 0)
-    derived.setdefault("cell_count", cell_count)
+    # -----------------------------
+    # Cost / runtime coefficients (deterministic extraction)
+    # -----------------------------
+    cost_coeff = None
+    runtime_coeff = None
 
-    derived.setdefault("estimated_cost_usd", None)
-    derived.setdefault("estimated_runtime_hours", None)
-    derived.setdefault("similar_runs", [])
+    cost_model = formulas.get("cost_model") or {}
+    runtime_model = formulas.get("runtime_model") or {}
+
+    for k in (
+        "cost_per_m_cells_per_iter",
+        "usd_per_m_cells_per_iter",
+        "usd_per_mcell_iter",
+        "usd_per_mcell_step",
+    ):
+        v = cost_model.get(k)
+        if isinstance(v, (int, float)):
+            cost_coeff = float(v)
+            break
+
+    for k in (
+        "hours_per_m_cells_per_iter",
+        "hours_per_mcell_iter",
+        "hours_per_mcell_step",
+        "hours_per_mcell_per_step",
+    ):
+        v = runtime_model.get(k)
+        if isinstance(v, (int, float)):
+            runtime_coeff = float(v)
+            break
+
+    # -----------------------------
+    # Compute deterministic resource estimates (tool-grade)
+    # -----------------------------
+    est = compute_resource_estimates(
+        mesh_report=mesh,
+        sim_config=sim,
+        cost_per_m_cells_per_iter=cost_coeff,
+        hours_per_m_cells_per_iter=runtime_coeff,
+    )
+
+    # Do NOT clobber CFL results; only set/augment resource-related metrics.
+    if est.cell_count and est.cell_count > 0:
+        derived["cell_count"] = float(est.cell_count)
+    else:
+        derived.setdefault("cell_count", 0.0)
+
+    derived["ram_gb"] = float(est.ram_gb)
+
+    # Conservative single-value estimates (equal to HIGH)
+    derived["estimated_cost_usd"] = float(est.estimated_cost_usd) if est.estimated_cost_usd is not None else None
+    derived["estimated_runtime_hours"] = (
+        float(est.estimated_runtime_hours) if est.estimated_runtime_hours is not None else None
+    )
+
+    # LOW/HIGH bounds (preferred fields for gating and for minimum required budget)
+    derived["steps"] = float(est.steps) if est.steps is not None else None
+    derived["iters_per_step_min"] = float(est.iters_per_step_min) if est.iters_per_step_min is not None else None
+    derived["iters_per_step_max"] = float(est.iters_per_step_max) if est.iters_per_step_max is not None else None
+
+    derived["total_solver_iterations_low"] = (
+        float(est.total_solver_iterations_low) if est.total_solver_iterations_low is not None else None
+    )
+    derived["total_solver_iterations_high"] = (
+        float(est.total_solver_iterations_high) if est.total_solver_iterations_high is not None else None
+    )
+
+    derived["work_units_low"] = float(est.work_units_low) if est.work_units_low is not None else None
+    derived["work_units_high"] = float(est.work_units_high) if est.work_units_high is not None else None
+
+    derived["estimated_cost_usd_low"] = (
+        float(est.estimated_cost_usd_low) if est.estimated_cost_usd_low is not None else None
+    )
+    derived["estimated_cost_usd_high"] = (
+        float(est.estimated_cost_usd_high) if est.estimated_cost_usd_high is not None else None
+    )
+
+    derived["estimated_runtime_hours_low"] = (
+        float(est.estimated_runtime_hours_low) if est.estimated_runtime_hours_low is not None else None
+    )
+    derived["estimated_runtime_hours_high"] = (
+        float(est.estimated_runtime_hours_high) if est.estimated_runtime_hours_high is not None else None
+    )
+
+    # Audit metadata for deterministic debugging and LLM anchoring.
+    derived["resource_missing_inputs"] = list(est.missing_inputs) if est.missing_inputs else []
+    derived["resource_notes"] = list(est.notes) if est.notes else []
 
     updates: Dict[str, Any] = {"derived_metrics": derived}
     updates |= _trace_append(
         state,
         "precompute_metrics",
-        {"courant_number": derived.get("courant_number")},
+        {
+            "courant_number": derived.get("courant_number"),
+            "cell_count": derived.get("cell_count"),
+            "ram_gb": derived.get("ram_gb"),
+            "estimated_cost_usd": derived.get("estimated_cost_usd"),
+            "estimated_runtime_hours": derived.get("estimated_runtime_hours"),
+            "steps": derived.get("steps"),
+            "iters_per_step_min": derived.get("iters_per_step_min"),
+            "iters_per_step_max": derived.get("iters_per_step_max"),
+            "work_units_low": derived.get("work_units_low"),
+            "work_units_high": derived.get("work_units_high"),
+            "estimated_cost_usd_low": derived.get("estimated_cost_usd_low"),
+            "estimated_cost_usd_high": derived.get("estimated_cost_usd_high"),
+            "resource_missing_inputs": derived.get("resource_missing_inputs"),
+        },
     )
     return updates
 
@@ -292,13 +388,25 @@ def phase1_agents_node(state: Dict[str, Any]) -> Dict[str, Any]:
         )
     votes.append(v.model_dump(mode="json"))
 
-    # RESOURCE_MANAGER (budget required)
+    # RESOURCE_MANAGER (budget / ROI gating using deterministic cost tool outputs)
     budget = sim.get("budget_usd", None)
+
+    # Prefer HIGH bound for conservative gating
+    est_cost_high = derived.get("estimated_cost_usd_high", None)
+    est_cost = derived.get("estimated_cost_usd", None)
+    est_runtime_high = derived.get("estimated_runtime_hours_high", None)
+    est_runtime = derived.get("estimated_runtime_hours", None)
+
+    # pick conservative values
+    cost_used = est_cost_high if est_cost_high is not None else est_cost
+    runtime_used = est_runtime_high if est_runtime_high is not None else est_runtime
+
     if budget is None:
+        # No budget => cannot do ROI gate deterministically
         v = AgentVote(
             agent=AgentName.RESOURCE_MANAGER,
             vote=VoteType.MODIFY,
-            reason="Missing budget_usd; cannot assess ROI.",
+            reason="Missing budget_usd; cannot perform ROI gating.",
             hard_constraints_triggered=[],
             modifications_required=[
                 {
@@ -309,14 +417,45 @@ def phase1_agents_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 }
             ],
         )
-    else:
+    elif cost_used is None:
+        # Budget exists but we cannot compute cost (most likely missing coefficient in formulas)
         v = AgentVote(
             agent=AgentName.RESOURCE_MANAGER,
-            vote=VoteType.APPROVE,
-            reason="Budget present (cost model not enabled yet).",
+            vote=VoteType.MODIFY,
+            reason="Budget present, but estimated_cost_usd is unavailable (missing cost model coefficient or iterations inputs).",
             hard_constraints_triggered=[],
-            modifications_required=[],
+            modifications_required=[
+                {
+                    "field": "$.formulas.cost_model.cost_per_m_cells_per_iter",
+                    "proposed_value": 0.00002,
+                    "rationale": "Provide cost_per_m_cells_per_iter to enable deterministic cost estimation.",
+                    "priority": "HIGH",
+                }
+            ],
         )
+    else:
+        budget_f = float(budget)
+        cost_f = float(cost_used)
+
+        if cost_f > budget_f:
+            # Hard reject: over budget
+            v = AgentVote(
+                agent=AgentName.RESOURCE_MANAGER,
+                vote=VoteType.REJECT,
+                reason=f"Estimated cost (conservative) ${cost_f:.6g} exceeds budget ${budget_f:.6g}.",
+                hard_constraints_triggered=["BUDGET_EXCEEDED"],
+                modifications_required=[],
+            )
+        else:
+            # Within budget => approve (you can optionally also gate by runtime if you have max_runtime_hours)
+            v = AgentVote(
+                agent=AgentName.RESOURCE_MANAGER,
+                vote=VoteType.APPROVE,
+                reason=f"Estimated cost (conservative) ${cost_f:.6g} is within budget ${budget_f:.6g}.",
+                hard_constraints_triggered=[],
+                modifications_required=[],
+            )
+
     votes.append(v.model_dump(mode="json"))
 
     # HISTORIAN (needs similar_runs; placeholder => MODIFY)

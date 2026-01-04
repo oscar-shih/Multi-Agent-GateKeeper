@@ -36,7 +36,8 @@ def main():
     out = app.invoke(state)
     # stdout must be final JSON only
     print(json.dumps(out["final_verdict"], ensure_ascii=False, sort_keys=True, separators=(",", ":")))
-
+    print("DERIVED_METRICS:", out.get("derived_metrics"))
+    print("PHASE1_VOTES:", out.get("phase1_votes"))
 
 if __name__ == "__main__":
     main()

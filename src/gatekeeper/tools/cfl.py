@@ -3,18 +3,7 @@ from __future__ import annotations
 import math
 from typing import Tuple
 
-def compute_cfl_from_handbook(
-    velocity_m_per_s: float,
-    time_step_s: float,
-    characteristic_length_m: float,
-    cell_count: float,
-) -> Tuple[float, float]:
-    """
-    Implements handbook formula:
-      dx_eff = characteristic_length / (cell_count^(1/3))
-      C = (velocity * time_step) / dx_eff
-    Returns: (courant_number, dx_eff_m)
-    """
+def compute_cfl_from_handbook(velocity_m_per_s: float, time_step_s: float, characteristic_length_m: float, cell_count: float) -> Tuple[float, float]:
     if cell_count <= 0:
         raise ValueError(f"cell_count must be > 0, got {cell_count}")
     if characteristic_length_m <= 0:
