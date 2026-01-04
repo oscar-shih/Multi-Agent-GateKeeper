@@ -103,7 +103,7 @@ Multi-Agent-GateKeeper/
       synthesizer.py
     graph/
       state.py                  # LangGraph state type
-      nodes.py                  # 每個 node 的純函數
+      nodes.py                  # Function for each node
       build.py                  # compile LangGraph
     utils/
       timebox.py                # 60 seconds
