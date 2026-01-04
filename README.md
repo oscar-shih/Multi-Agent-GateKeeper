@@ -129,6 +129,5 @@ python -m gatekeeper.cli \
 --mesh data/inputs/mesh_report.json \
 --sim data/inputs/sim_config.json \
 --past data/inputs/past_runs.json \
---formulas data/inputs/simulation_formulas.json \
---jobs data/inputs/job_config.json # TODO: job_config.json TBD
+--formulas data/inputs/simulation_formulas.json 
 ```
