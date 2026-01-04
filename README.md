@@ -115,3 +115,20 @@ Multi-Agent-GateKeeper/
     test_unstable_job.py
     test_hallucination_job.py
 ```
+## Environment
+```
+conda create -n cfd-gatekeeper python=3.11 -y
+conda activate cfd-gatekeeper
+pip install -e .
+python -m gatekeeper.cli --help
+```
+
+## Testing
+```
+python -m gatekeeper.cli \
+--mesh data/inputs/mesh_report.json \
+--sim data/inputs/sim_config.json \
+--past data/inputs/past_runs.json \
+--formulas data/inputs/simulation_formulas.json \
+--jobs data/inputs/job_config.json # TODO: job_config.json TBD
+```
