@@ -131,3 +131,6 @@ python -m gatekeeper.cli \
 --past data/inputs/past_runs.json \
 --formulas data/inputs/simulation_formulas.json 
 ```
+
+## Note
+“Agents are implemented as adversarial stakeholders; Phase 1 is deterministic policy evaluation with tool-verified evidence; Phase 2 uses Gemini to produce a structured, one-round debate trace grounded strictly in the Phase 1 evidence; final verdict remains deterministic per spec.”

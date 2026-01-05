@@ -5,7 +5,7 @@
         "created_by": "user_29",
         "priority": "high"
     },
-    "budget_usd": 70,
+    "budget_usd": 55,
     "physics_setup": {
         "flow_regime": "turbulent",
         "turbulence_model": {

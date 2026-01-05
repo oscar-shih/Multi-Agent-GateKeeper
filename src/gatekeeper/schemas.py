@@ -149,8 +149,7 @@ class FinalVerdict(BaseModel):
 
     @model_validator(mode="after")
     def _enforce_verdict_consistency(self) -> "FinalVerdict":
-        if self.status == VerdictStatus.APPROVED and self.modifications_required:
-            raise ValueError("APPROVED verdict must not include modifications_required.")
+        # Relaxed check: APPROVED can now carry warnings in modifications_required.
         if self.status == VerdictStatus.REJECTED and len(self.modifications_required) == 0:
             raise ValueError("REJECTED verdict must include at least one modifications_required item.")
         return self

@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 import re
 import time
+import os
+from pathlib import Path
 from typing import Any, Dict, List
 
 from gatekeeper.schemas import (
@@ -13,10 +15,12 @@ from gatekeeper.schemas import (
     AgentVote,
     DebateMessage,
     FinalVerdict,
+    DebateStance,
 )
 from gatekeeper.tools.cfl import compute_cfl_from_handbook
 from gatekeeper.tools.similarity import retrieve_similar_runs
 from gatekeeper.tools.cost import compute_resource_estimates
+from gatekeeper.llm import call_gemini
 
 # -----------------------------
 # Utilities: timebox + JSON parsing
@@ -51,6 +55,16 @@ def _trace_append(state: Dict[str, Any], key: str, value: Any) -> Dict[str, Any]
     trace = dict(state.get("trace") or {})
     trace[key] = value
     return {"trace": trace}
+
+
+def _get_agent_prompt(agent_name: str) -> str:
+    # Map AgentName (upper) to filename (lower)
+    # e.g. PHYSICIST -> physicist.system.txt
+    root = Path(__file__).parent.parent / "prompts"
+    path = root / f"{agent_name.lower()}.system.txt"
+    if path.exists():
+        return path.read_text(encoding="utf-8")
+    return f"You are {agent_name}. You are a strict gatekeeper."
 
 
 # -----------------------------
@@ -436,22 +450,43 @@ def phase1_agents_node(state: Dict[str, Any]) -> Dict[str, Any]:
     else:
         budget_f = float(budget)
         cost_f = float(cost_used)
+        
+        # New Logic: Tolerance window
+        # 1. Cost > Budget * 1.2 => Hard Reject (>20% over)
+        # 2. Budget < Cost <= Budget * 1.2 => Modify (0-20% over)
+        # 3. Cost <= Budget => Approve
 
-        if cost_f > budget_f:
-            # Hard reject: over budget
+        if cost_f > budget_f * 1.2:
+            # Hard reject: significantly over budget
             v = AgentVote(
                 agent=AgentName.RESOURCE_MANAGER,
                 vote=VoteType.REJECT,
-                reason=f"Estimated cost (conservative) ${cost_f:.6g} exceeds budget ${budget_f:.6g}.",
+                reason=f"Estimated cost ${cost_f:.6g} exceeds budget ${budget_f:.6g} by >20%.",
                 hard_constraints_triggered=["BUDGET_EXCEEDED"],
                 modifications_required=[],
             )
+        elif cost_f > budget_f:
+            # Modify: minor overrun (<= 20%)
+            v = AgentVote(
+                agent=AgentName.RESOURCE_MANAGER,
+                vote=VoteType.MODIFY,
+                reason=f"Estimated cost ${cost_f:.6g} slightly exceeds budget ${budget_f:.6g} (<=20%). Consider increasing budget or optimizing.",
+                hard_constraints_triggered=[],
+                modifications_required=[
+                    {
+                        "field": "$.budget_usd",
+                        "proposed_value": round(cost_f * 1.05, 2),
+                        "rationale": "Slight budget increase required to cover conservative estimate.",
+                        "priority": "MEDIUM",
+                    }
+                ],
+            )
         else:
-            # Within budget => approve (you can optionally also gate by runtime if you have max_runtime_hours)
+            # Within budget => approve
             v = AgentVote(
                 agent=AgentName.RESOURCE_MANAGER,
                 vote=VoteType.APPROVE,
-                reason=f"Estimated cost (conservative) ${cost_f:.6g} is within budget ${budget_f:.6g}.",
+                reason=f"Estimated cost ${cost_f:.6g} is within budget ${budget_f:.6g}.",
                 hard_constraints_triggered=[],
                 modifications_required=[],
             )
@@ -542,19 +577,51 @@ def phase1_agents_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 }
             ],
         )
-    elif max_allowed is not None and float(cfl) > max_allowed:
-        v = AgentVote(
-            agent=AgentName.STABILIZER,
-            vote=VoteType.REJECT,
-            reason=f"CFL violation: Courant={cfl} > max_allowed={max_allowed}.",
-            hard_constraints_triggered=["CFL_VIOLATION"],
-            modifications_required=[],
-        )
+    elif max_allowed is not None:
+        cfl_f = float(cfl)
+        
+        # New Logic: Tolerance for CFL
+        # 1. CFL > Max * 2.0 => Hard Reject (Way too unstable)
+        # 2. Max < CFL <= Max * 2.0 => Modify (Risky, maybe implicit solver can handle it)
+        # 3. CFL <= Max => Approve
+        
+        if cfl_f > max_allowed * 2.0:
+            v = AgentVote(
+                agent=AgentName.STABILIZER,
+                vote=VoteType.REJECT,
+                reason=f"CFL violation: Courant={cfl_f:.2f} > 2x max_allowed ({max_allowed}). Unstable.",
+                hard_constraints_triggered=["CFL_VIOLATION"],
+                modifications_required=[],
+            )
+        elif cfl_f > max_allowed:
+            v = AgentVote(
+                agent=AgentName.STABILIZER,
+                vote=VoteType.MODIFY,
+                reason=f"CFL {cfl_f:.2f} exceeds max_allowed {max_allowed} but is within 2x tolerance. Recommend reducing time-step.",
+                hard_constraints_triggered=[],
+                modifications_required=[
+                    {
+                        "field": "$.numerics.time_step.size",
+                        "proposed_value": "decrease",
+                        "rationale": "Reduce dt to bring Courant number below max_allowed.",
+                        "priority": "HIGH",
+                    }
+                ],
+            )
+        else:
+            v = AgentVote(
+                agent=AgentName.STABILIZER,
+                vote=VoteType.APPROVE,
+                reason="CFL check passes under current thresholds.",
+                hard_constraints_triggered=[],
+                modifications_required=[],
+            )
     else:
+        # No max_allowed defined? Approve by default or Warn? Let's approve for now.
         v = AgentVote(
             agent=AgentName.STABILIZER,
             vote=VoteType.APPROVE,
-            reason="CFL check passes under current thresholds.",
+            reason="No max_allowed CFL defined in formulas.",
             hard_constraints_triggered=[],
             modifications_required=[],
         )
@@ -585,25 +652,99 @@ def debate_one_round_node(state: Dict[str, Any]) -> Dict[str, Any]:
     reject = [v for v in votes if v["vote"] == VoteType.REJECT.value]
     modify = [v for v in votes if v["vote"] == VoteType.MODIFY.value]
 
-    support = approve[0]["agent"] if approve else (modify[0]["agent"] if modify else votes[0]["agent"])
-    oppose = reject[0]["agent"] if reject else (modify[0]["agent"] if modify else votes[0]["agent"])
+    # Deterministically pick support: try Approve -> Modify -> Reject (consensus fallback)
+    # We just need ONE defender to stand for the "Yes" or "Maybe" side.
+    if approve:
+        support_vote = approve[0]
+    elif modify:
+        support_vote = modify[0]
+    else:
+        # If everyone rejects, pick the first one as a nominal "defender" just to enable loop,
+        # or better: return early because there's no debate (everyone agrees to kill it).
+        # But if we must debate, we pick the first.
+        # Actually, if everyone rejects, debate is moot. But let's assume router sent us here.
+        support_vote = votes[0]
+
+    support_agent = support_vote["agent"]
+    support_prompt_sys = _get_agent_prompt(support_agent)
+    
+    # Identify ALL opponents (Rejectors and Modifiers who disagree with Support)
+    # If Support is Approve, opponents are Reject + Modify
+    # If Support is Modify, opponents are Reject (and maybe other Modifies? simplicity: just Reject)
+    opponents = []
+    if support_vote["vote"] == VoteType.APPROVE.value:
+        opponents = reject + modify
+    elif support_vote["vote"] == VoteType.MODIFY.value:
+        opponents = reject
+    
+    # Fallback: if no clear opponents found but we are here, maybe it's Modify vs Modify?
+    # Let's just grab anyone who isn't the support agent and has a different vote/reason.
+    if not opponents:
+        opponents = [v for v in votes if v["agent"] != support_agent and v["vote"] != support_vote["vote"]]
+
+    # Sort opponents deterministically by AgentName to ensure stable order
+    opponents.sort(key=lambda x: x["agent"])
+
+    # If still empty (e.g. all Approved), return empty
+    if not opponents:
+        return {"debate_messages": []}
+
+    messages: List[Dict[str, Any]] = []
+
+    # 1. Support agent speaks ONCE to set the stage
+    # "I vote APPROVE because X. I see some of you disagree."
+    p1 = f"""
+    You are in a debate. You voted {support_vote['vote']} because: "{support_vote['reason']}".
+    You are facing {len(opponents)} opponent(s): {', '.join([op['agent'] for op in opponents])}.
+    
+    Produce a short, sharp argument (max 40 words) defending your position and challenging the opponents.
+    Output plain text only.
+    """
+    try:
+        msg1_text = call_gemini(support_prompt_sys + "\n\n" + p1, temperature=0.0).strip()
+    except Exception as e:
+        msg1_text = f"(AI Error: {e}) My vote stands based on {support_vote['reason']}."
 
     m1 = DebateMessage(
-        agent=AgentName(support),
-        stance="DEFEND",
-        message="My vote reflects my domain constraints; propose minimal changes to satisfy other stakeholders.",
-        targets=[AgentName(oppose)],
+        agent=AgentName(support_agent),
+        stance=DebateStance.DEFEND,
+        message=msg1_text,
+        targets=[AgentName(op["agent"]) for op in opponents][:3], # max 3 targets in schema
     )
-    m2 = DebateMessage(
-        agent=AgentName(oppose),
-        stance="ATTACK",
-        message="Your position ignores a hard risk in my domain; adjust flagged items before running.",
-        targets=[AgentName(support)],
-    )
+    messages.append(m1.model_dump(mode="json"))
+
+    # 2. EACH Opponent rebuts the Support agent independently (Parallel Logic in loop)
+    # In a real async system we'd fire these in parallel. Here we loop sequentially but it's fast.
+    for op_vote in opponents:
+        op_agent = op_vote["agent"]
+        op_prompt_sys = _get_agent_prompt(op_agent)
+        
+        p2 = f"""
+        You are in a debate. You voted {op_vote['vote']} because: "{op_vote['reason']}".
+        The supporter {support_agent} just said: "{msg1_text}".
+        
+        Produce a short, sharp rebuttal (max 40 words) explaining why they are wrong and your constraint is non-negotiable.
+        Output plain text only.
+        """
+        try:
+            msg2_text = call_gemini(op_prompt_sys + "\n\n" + p2, temperature=0.0).strip()
+        except Exception as e:
+            msg2_text = f"(AI Error: {e}) I disagree. {op_vote['reason']}"
+            
+        m2 = DebateMessage(
+            agent=AgentName(op_agent),
+            stance=DebateStance.ATTACK,
+            message=msg2_text,
+            targets=[AgentName(support_agent)],
+        )
+        messages.append(m2.model_dump(mode="json"))
 
     return {
-        "debate_messages": [m1.model_dump(mode="json"), m2.model_dump(mode="json")],
-        **_trace_append(state, "debate_one_round", {"support": support, "oppose": oppose}),
+        "debate_messages": messages,
+        **_trace_append(state, "debate_one_round", {
+            "support": support_agent, 
+            "opponents": [op["agent"] for op in opponents]
+        }),
     }
 
 
@@ -611,55 +752,115 @@ def synthesize_verdict_node(state: Dict[str, Any]) -> Dict[str, Any]:
     _ensure_time(state, margin_s=0.2)
 
     votes = state.get("phase1_votes") or []
-
+    debate_msgs = state.get("debate_messages") or []
+    
+    # 1. Deterministic Fallback Checks
     has_hard_reject = any(
         (v["vote"] == VoteType.REJECT.value) and (len(v.get("hard_constraints_triggered") or []) > 0)
         for v in votes
     )
     all_approve = len(votes) > 0 and all(v["vote"] == VoteType.APPROVE.value for v in votes)
 
-    merged_mods: List[Dict[str, Any]] = []
-    seen = set()
-    for v in votes:
-        for m in v.get("modifications_required") or []:
-            key = (m["field"], json.dumps(m.get("proposed_value", None), sort_keys=True, ensure_ascii=False))
-            if key in seen:
-                continue
-            seen.add(key)
-            merged_mods.append(
-                {
-                    "field": m["field"],
-                    "proposed_value": m.get("proposed_value", None),
-                    "rationale": m.get("rationale", ""),
-                    "priority": m.get("priority", "MEDIUM"),
-                    "owner": v["agent"],
-                }
-            )
-
-    conf = 1.0
-    for v in votes:
-        if v["vote"] == VoteType.REJECT.value:
-            conf -= 0.25
-        elif v["vote"] == VoteType.MODIFY.value:
-            conf -= 0.10
-    conf = max(0.0, min(1.0, conf))
-
+    # If all approve, no need for LLM synthesis (save time/cost)
     if all_approve:
-        verdict = FinalVerdict(status=VerdictStatus.APPROVED, confidence=conf, modifications_required=[])
-    else:
+        verdict = FinalVerdict(status=VerdictStatus.APPROVED, confidence=1.0, modifications_required=[])
+        return {
+            "final_verdict": verdict.model_dump(mode="json"),
+            **_trace_append(state, "synthesize_verdict", {"method": "unanimous_approve"}),
+        }
+
+    # 2. LLM Synthesis
+    # Prepare context
+    synth_prompt = _get_agent_prompt("SYNTHESIZER")
+    
+    # Minimal serialization for prompt context
+    votes_json = json.dumps(votes, indent=2, ensure_ascii=False)
+    debate_json = json.dumps(debate_msgs, indent=2, ensure_ascii=False)
+    
+    user_prompt = f"""
+    PHASE 1 VOTES:
+    {votes_json}
+    
+    DEBATE LOGS:
+    {debate_json}
+    
+    Based on the above, produce the Final Verdict JSON.
+    """
+    
+    try:
+        response_text = call_gemini(synth_prompt + "\n\n" + user_prompt, json_mode=True, temperature=0.0).strip()
+        # Strip markdown code blocks if present
+        if response_text.startswith("```"):
+            response_text = re.sub(r"^```[a-z]*\n", "", response_text)
+            response_text = re.sub(r"\n```$", "", response_text)
+            
+        final_dict = json.loads(response_text)
+        verdict = FinalVerdict.model_validate(final_dict)
+        
+        # Safety check: if hard reject exists, status MUST be REJECTED
+        if has_hard_reject and verdict.status == VerdictStatus.APPROVED:
+            # Overrule LLM hallucination
+            verdict = FinalVerdict(
+                status=VerdictStatus.REJECTED, 
+                confidence=verdict.confidence,
+                modifications_required=[
+                    {
+                        "field": "$.status", 
+                        "proposed_value": "REJECTED", 
+                        "rationale": "Hard constraints triggered; LLM approval overruled.",
+                        "priority": "HIGH",
+                        "owner": AgentName.SYNTHESIZER
+                    }
+                ]
+            )
+            
+        return {
+            "final_verdict": verdict.model_dump(mode="json"),
+            **_trace_append(state, "synthesize_verdict", {"method": "llm_synthesis"}),
+        }
+
+    except Exception as e:
+        # Fallback to rule-based logic if LLM fails
+        # Re-use the original rule-based logic for safety
+        merged_mods: List[Dict[str, Any]] = []
+        seen = set()
+        for v in votes:
+            for m in v.get("modifications_required") or []:
+                key = (m["field"], json.dumps(m.get("proposed_value", None), sort_keys=True, ensure_ascii=False))
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged_mods.append(
+                    {
+                        "field": m["field"],
+                        "proposed_value": m.get("proposed_value", None),
+                        "rationale": m.get("rationale", ""),
+                        "priority": m.get("priority", "MEDIUM"),
+                        "owner": v["agent"],
+                    }
+                )
+
+        conf = 1.0
+        for v in votes:
+            if v["vote"] == VoteType.REJECT.value:
+                conf -= 0.25
+            elif v["vote"] == VoteType.MODIFY.value:
+                conf -= 0.10
+        conf = max(0.0, min(1.0, conf))
+
         if not merged_mods:
             merged_mods = [
                 {
                     "field": "$.action",
                     "proposed_value": "provide_missing_information",
-                    "rationale": "Non-unanimous votes; provide required info or changes.",
+                    "rationale": "Non-unanimous votes; provide required info or changes (Fallback Logic).",
                     "priority": "HIGH",
                     "owner": AgentName.SYNTHESIZER.value,
                 }
             ]
         verdict = FinalVerdict(status=VerdictStatus.REJECTED, confidence=conf, modifications_required=merged_mods)
-
-    return {
-        "final_verdict": verdict.model_dump(mode="json"),
-        **_trace_append(state, "synthesize_verdict", {"final_status": verdict.status}),
-    }
+        
+        return {
+            "final_verdict": verdict.model_dump(mode="json"),
+            **_trace_append(state, "synthesize_verdict", {"method": "fallback_rule_based", "error": str(e)}),
+        }
