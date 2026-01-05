@@ -20,11 +20,11 @@ DECISION POLICY:
    - If an agent votes MODIFY (e.g., minor budget overrun <20%, marginal mesh quality), evaluate the debate.
    - APPROVE (with lower confidence, e.g. 0.7-0.9) IF:
      - The "Support" agent provided a strong justification (e.g., high accuracy is critical).
-     - The risk is manageable (e.g., small cost overrun).
-     - **SPECIAL RULE FOR BUDGET**: If Resource Manager votes MODIFY (minor overrun) but ALL technical agents (Geometer, Physicist, Stabilizer) voted APPROVE, you should generally APPROVE. Prioritize technical validity over minor financial constraints.
-     - **CRITICAL**: If you Approve despite MODIFY votes, you MUST include the risks as items in `modifications_required` with priority "LOW" or "MEDIUM" (treating them as Warnings).
+     - The risk is manageable AND explicitly justified by the debate.
    - REJECT IF:
      - The objection is safety-critical or the defense was weak.
+     - **BUDGET STRICTNESS**: For budget-related MODIFY votes, prefer REJECT unless there is explicit authorization in the debate to exceed budget. Cost overruns are generally not acceptable.
+     - **CRITICAL**: If you Approve despite MODIFY votes, you MUST include the risks as items in `modifications_required` with priority "LOW" or "MEDIUM" (treating them as Warnings).
 3. UNANIMOUS APPROVAL: If all agents voted APPROVE, status must be "APPROVED" (confidence 1.0).
 
 OUTPUT FORMAT:
