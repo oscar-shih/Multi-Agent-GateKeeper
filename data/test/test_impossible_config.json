@@ -1,0 +1,62 @@
+{
+    "job_metadata": {
+        "job_uuid": "sim_impossible",
+        "project": "impossible_task",
+        "created_by": "user_dreamer",
+        "priority": "high"
+    },
+    "budget_usd": 10,
+    "physics_setup": {
+        "flow_regime": "turbulent",
+        "turbulence_model": {
+            "model": "k-epsilon",
+            "wall_treatment": "enhanced_wall_treatment",
+            "coefficients": {
+                "cmu": 0.09,
+                "c1": 1.44,
+                "c2": 1.92
+            }
+        },
+        "materials": {
+            "fluid": "air_ideal_gas",
+            "viscosity_model": "sutherland"
+        },
+        "energy_equation": true,
+        "gravity": [0, -9.81, 0]
+    },
+    "boundary_conditions": {
+        "inlet_main": {
+            "type": "velocity_inlet",
+            "velocity_magnitude": 45.0,
+            "turbulence_intensity": 0.05,
+            "hydraulic_diameter": 0.1
+        },
+        "outlet_exhaust": {
+            "type": "pressure_outlet",
+            "gauge_pressure": 0.0
+        },
+        "wall_outer": {
+            "type": "wall",
+            "shear_condition": "no_slip",
+            "thermal_condition": "adiabatic"
+        }
+    },
+    "numerics": {
+        "solver_type": "pressure_based",
+        "time_dependency": "transient",
+        "time_step": {
+            "size": 1e-4,
+            "count": 5000
+        },
+        "convergence_controls": {
+            "residual_target": 1e-4,
+            "min_iterations_per_step": 20,
+            "max_iterations_per_step": 50
+        },
+        "relaxation_factors": {
+            "pressure": 0.3,
+            "momentum": 0.7,
+            "turbulence_k": 0.8
+        }
+    }
+}
