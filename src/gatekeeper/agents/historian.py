@@ -30,20 +30,20 @@ class HistorianAgent(BaseAgent):
             crashed = [h for h in similar if str(h.get("outcome", "")).upper() == "CRASHED"]
             top_crash = crashed[0] if crashed else None
 
-            if top_crash and float(top_crash.get("similarity_score", 0.0)) >= 0.95 and (not bool(top_crash.get("stabilization_knobs_changed"))):
+            if top_crash and float(top_crash.get("similarity_score", 0.0)) >= 0.9 and (not bool(top_crash.get("stabilization_knobs_changed"))):
                 return AgentVote(
                     agent=self.name,
                     vote=VoteType.REJECT,
-                    reason=f"High similarity to past crash {top_crash.get('job_id')} (>=0.95) with no stabilization knob changes.",
+                    reason=f"High similarity to past crash {top_crash.get('job_id')} (>=0.9) with no stabilization knob changes.",
                     hard_constraints_triggered=["SIMILAR_TO_PAST_CRASH"],
                     modifications_required=[],
                 )
-            elif top_crash and float(top_crash.get("similarity_score", 0.0)) >= 0.85:
+            elif top_crash and float(top_crash.get("similarity_score", 0.0)) >= 0.8:
                 # Require stabilization changes
                 return AgentVote(
                     agent=self.name,
                     vote=VoteType.MODIFY,
-                    reason=f"Moderate/high similarity to past crash {top_crash.get('job_id')} (>=0.85). Recommend stabilization changes.",
+                    reason=f"Moderate/high similarity to past crash {top_crash.get('job_id')} (>=0.8). Recommend stabilization changes.",
                     hard_constraints_triggered=[],
                     modifications_required=[
                         {
