@@ -1,18 +1,13 @@
 from __future__ import annotations
 
-import json
-import re
 import time
-from pathlib import Path
 from typing import Any, Dict, List
 
 from gatekeeper.schemas import (
     AgentName,
     VoteType,
     VerdictStatus,
-    AgentVote,
     DebateMessage,
-    FinalVerdict,
     DebateStance,
 )
 from gatekeeper.tools.cfl import compute_cfl_from_handbook
@@ -20,7 +15,6 @@ from gatekeeper.tools.similarity import retrieve_similar_runs
 from gatekeeper.tools.cost import compute_resource_estimates
 from gatekeeper.llm import call_gemini
 
-# Import Agents
 from gatekeeper.agents.geometer import GeometerAgent
 from gatekeeper.agents.physicist import PhysicistAgent
 from gatekeeper.agents.resource_manager import ResourceManagerAgent
@@ -29,9 +23,9 @@ from gatekeeper.agents.stabilizer import StabilizerAgent
 from gatekeeper.agents.synthesizer import SynthesizerAgent
 from gatekeeper.agents.base import BaseAgent
 
-# -----------------------------
-# Utilities: timebox + JSON parsing
-# -----------------------------
+from gatekeeper.io.load_json import load_json_with_comments
+from gatekeeper.io.normalize import normalize_sim_config
+
 def _ensure_time(state: Dict[str, Any], margin_s: float = 1.0) -> None:
     deadline = float(state.get("deadline_epoch_s", 0.0) or 0.0)
     if deadline <= 0:
@@ -39,24 +33,9 @@ def _ensure_time(state: Dict[str, Any], margin_s: float = 1.0) -> None:
     if time.time() + margin_s > deadline:
         raise TimeoutError("TIMEBOX_EXCEEDED")
 
-
-def _strip_line_comments(text: str) -> str:
-    # Minimal deterministic stripper for // comments (assumes no // inside JSON strings)
-    lines = []
-    for line in text.splitlines():
-        lines.append(re.sub(r"//.*$", "", line))
-    return "\n".join(lines)
-
-
-def _load_json_with_comments(text: str) -> Dict[str, Any]:
-    cleaned = _strip_line_comments(text)
-    return json.loads(cleaned)
-
-
 def _read_text(path: str) -> str:
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
-
 
 def _trace_append(state: Dict[str, Any], key: str, value: Any) -> Dict[str, Any]:
     trace = dict(state.get("trace") or {})
@@ -80,9 +59,6 @@ def _get_agent_instance(name_str: str) -> BaseAgent:
     else:
         raise ValueError(f"Unknown agent: {name_str}")
 
-# -----------------------------
-# Node 0: load inputs
-# -----------------------------
 def load_inputs_node(state: Dict[str, Any]) -> Dict[str, Any]:
     _ensure_time(state)
 
@@ -103,33 +79,24 @@ def load_inputs_node(state: Dict[str, Any]) -> Dict[str, Any]:
     updates |= _trace_append(state, "load_inputs", {"loaded": True, "files": dict(paths)})
     return updates
 
-
-# -----------------------------
-# Node 1: parse + normalize
-# -----------------------------
 def parse_and_normalize_node(state: Dict[str, Any]) -> Dict[str, Any]:
     _ensure_time(state)
 
     raw = state.get("raw") or {}
+    
     parsed = {
-        "mesh_report": _load_json_with_comments(raw["mesh_report"]),
-        "sim_config": _load_json_with_comments(raw["sim_config"]),
-        "past_runs": _load_json_with_comments(raw["past_runs"]),
-        "formulas": _load_json_with_comments(raw["formulas"]),
+        "mesh_report": load_json_with_comments(raw["mesh_report"]),
+        "sim_config": load_json_with_comments(raw["sim_config"]),
+        "past_runs": load_json_with_comments(raw["past_runs"]),
+        "formulas": load_json_with_comments(raw["formulas"]),
     }
 
-    # Minimal normalize defaults
-    parsed["sim_config"].setdefault("budget_usd", None)
-    parsed["sim_config"].setdefault("max_runtime_hours", None)
+    parsed["sim_config"] = normalize_sim_config(parsed["sim_config"])
 
     updates: Dict[str, Any] = {"parsed": parsed}
     updates |= _trace_append(state, "parse_and_normalize", {"ok": True})
     return updates
 
-
-# -----------------------------
-# Node 2: CFL tool node (DO NOT crash if missing fields)
-# -----------------------------
 def compute_cfl_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
     _ensure_time(state)
 
@@ -198,9 +165,6 @@ def compute_cfl_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
         },
     }
 
-# -----------------------------
-# Node 3: deterministic metrics
-# -----------------------------
 def precompute_metrics_node(state: Dict[str, Any]) -> Dict[str, Any]:
     _ensure_time(state)
 
@@ -211,9 +175,6 @@ def precompute_metrics_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     derived = dict(state.get("derived_metrics") or {})
 
-    # -----------------------------
-    # Cost / runtime coefficients (deterministic extraction)
-    # -----------------------------
     cost_coeff = None
     runtime_coeff = None
 
@@ -242,9 +203,6 @@ def precompute_metrics_node(state: Dict[str, Any]) -> Dict[str, Any]:
             runtime_coeff = float(v)
             break
 
-    # -----------------------------
-    # Compute deterministic resource estimates (tool-grade)
-    # -----------------------------
     est = compute_resource_estimates(
         mesh_report=mesh,
         sim_config=sim,
@@ -252,7 +210,6 @@ def precompute_metrics_node(state: Dict[str, Any]) -> Dict[str, Any]:
         hours_per_m_cells_per_iter=runtime_coeff,
     )
 
-    # Do NOT clobber CFL results; only set/augment resource-related metrics.
     if est.cell_count and est.cell_count > 0:
         derived["cell_count"] = float(est.cell_count)
     else:
@@ -260,13 +217,11 @@ def precompute_metrics_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     derived["ram_gb"] = float(est.ram_gb)
 
-    # Conservative single-value estimates (equal to HIGH)
     derived["estimated_cost_usd"] = float(est.estimated_cost_usd) if est.estimated_cost_usd is not None else None
     derived["estimated_runtime_hours"] = (
         float(est.estimated_runtime_hours) if est.estimated_runtime_hours is not None else None
     )
 
-    # LOW/HIGH bounds (preferred fields for gating and for minimum required budget)
     derived["steps"] = float(est.steps) if est.steps is not None else None
     derived["iters_per_step_min"] = float(est.iters_per_step_min) if est.iters_per_step_min is not None else None
     derived["iters_per_step_max"] = float(est.iters_per_step_max) if est.iters_per_step_max is not None else None
@@ -295,7 +250,6 @@ def precompute_metrics_node(state: Dict[str, Any]) -> Dict[str, Any]:
         float(est.estimated_runtime_hours_high) if est.estimated_runtime_hours_high is not None else None
     )
 
-    # Audit metadata for deterministic debugging and LLM anchoring.
     derived["resource_missing_inputs"] = list(est.missing_inputs) if est.missing_inputs else []
     derived["resource_notes"] = list(est.notes) if est.notes else []
 
@@ -337,15 +291,11 @@ def retrieve_similar_runs_node(state: Dict[str, Any]) -> Dict[str, Any]:
         **_trace_append(state, "retrieve_similar_runs", {"top_k": len(hits), "hits": hits}),
     }
 
-# -----------------------------
-# Node 4: Phase 1 - rule-based votes (REFACTORED)
-# -----------------------------
 def phase1_agents_node(state: Dict[str, Any]) -> Dict[str, Any]:
     _ensure_time(state)
 
     votes: List[Dict[str, Any]] = []
 
-    # Instantiate and run each agent
     agents = [
         GeometerAgent(),
         PhysicistAgent(),
@@ -383,7 +333,6 @@ def debate_one_round_node(state: Dict[str, Any]) -> Dict[str, Any]:
     reject = [v for v in votes if v["vote"] == VoteType.REJECT.value]
     modify = [v for v in votes if v["vote"] == VoteType.MODIFY.value]
 
-    # Deterministically pick support: try Approve -> Modify -> Reject (consensus fallback)
     if approve:
         support_vote = approve[0]
     elif modify:
@@ -395,7 +344,6 @@ def debate_one_round_node(state: Dict[str, Any]) -> Dict[str, Any]:
     support_agent = _get_agent_instance(support_agent_name)
     support_prompt_sys = support_agent.load_system_prompt()
     
-    # Identify ALL opponents
     opponents = []
     if support_vote["vote"] == VoteType.APPROVE.value:
         opponents = reject + modify
@@ -412,7 +360,6 @@ def debate_one_round_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     messages: List[Dict[str, Any]] = []
 
-    # 1. Support agent speaks ONCE
     p1 = f"""
     You are in a debate. You voted {support_vote['vote']} because: "{support_vote['reason']}".
     You are facing {len(opponents)} opponent(s): {', '.join([op['agent'] for op in opponents])}.
@@ -433,7 +380,6 @@ def debate_one_round_node(state: Dict[str, Any]) -> Dict[str, Any]:
     )
     messages.append(m1.model_dump(mode="json"))
 
-    # 2. EACH Opponent rebuts
     for op_vote in opponents:
         op_agent_name = op_vote["agent"]
         op_agent = _get_agent_instance(op_agent_name)
@@ -476,9 +422,7 @@ def synthesize_verdict_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     method = "llm_synthesis"
     if verdict.confidence == 1.0 and not verdict.modifications_required and verdict.status == VerdictStatus.APPROVED:
-         method = "unanimous_approve" # Simple heuristic for tracing
-    
-    # Check if fallback logic was used based on confidence/mods if needed, but 'method' is just for trace.
+        method = "unanimous_approve"
     
     return {
         "final_verdict": verdict.model_dump(mode="json"),

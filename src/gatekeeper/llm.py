@@ -8,8 +8,6 @@ _CLIENT: Optional[genai.Client] = None
 def get_client() -> genai.Client:
     global _CLIENT
     if _CLIENT is None:
-        # Try reading from api.txt in the project root first
-        # Structure: src/gatekeeper/llm.py -> root is 3 levels up
         root_dir = Path(__file__).resolve().parent.parent.parent
         api_file = root_dir / "api.txt"
         
@@ -20,7 +18,6 @@ def get_client() -> genai.Client:
             except Exception:
                 pass
         
-        # Fallback to environment variable
         if not api_key:
             api_key = os.environ.get("GEMINI_API_KEY")
             
@@ -36,9 +33,6 @@ def call_gemini(
     json_mode: bool = False,
     temperature: float = 0.0
 ) -> str:
-    """
-    Synchronous call to Gemini API.
-    """
     client = get_client()
     
     config_args = {"temperature": temperature}
