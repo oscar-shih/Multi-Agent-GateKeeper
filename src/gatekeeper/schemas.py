@@ -92,7 +92,7 @@ class DebateMessage(BaseModel):
     agent: AgentName
     stance: DebateStance
     message: DebateText
-    targets: conlist(AgentName, min_length=1, max_length=3) = Field(
+    targets: conlist(AgentName, min_length=1, max_length=5) = Field(
         ..., description="Agents this message is responding to."
     )
 

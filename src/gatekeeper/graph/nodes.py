@@ -15,6 +15,7 @@ from gatekeeper.tools.similarity import retrieve_similar_runs
 from gatekeeper.tools.cost import compute_resource_estimates
 from gatekeeper.llm import call_gemini
 
+# Import Agents
 from gatekeeper.agents.geometer import GeometerAgent
 from gatekeeper.agents.physicist import PhysicistAgent
 from gatekeeper.agents.resource_manager import ResourceManagerAgent
@@ -23,9 +24,13 @@ from gatekeeper.agents.stabilizer import StabilizerAgent
 from gatekeeper.agents.synthesizer import SynthesizerAgent
 from gatekeeper.agents.base import BaseAgent
 
+# Import IO utilities
 from gatekeeper.io.load_json import load_json_with_comments
 from gatekeeper.io.normalize import normalize_sim_config
 
+# -----------------------------
+# Utilities: timebox
+# -----------------------------
 def _ensure_time(state: Dict[str, Any], margin_s: float = 1.0) -> None:
     deadline = float(state.get("deadline_epoch_s", 0.0) or 0.0)
     if deadline <= 0:
@@ -33,9 +38,11 @@ def _ensure_time(state: Dict[str, Any], margin_s: float = 1.0) -> None:
     if time.time() + margin_s > deadline:
         raise TimeoutError("TIMEBOX_EXCEEDED")
 
+
 def _read_text(path: str) -> str:
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
+
 
 def _trace_append(state: Dict[str, Any], key: str, value: Any) -> Dict[str, Any]:
     trace = dict(state.get("trace") or {})
@@ -59,6 +66,9 @@ def _get_agent_instance(name_str: str) -> BaseAgent:
     else:
         raise ValueError(f"Unknown agent: {name_str}")
 
+# -----------------------------
+# Node 0: load inputs
+# -----------------------------
 def load_inputs_node(state: Dict[str, Any]) -> Dict[str, Any]:
     _ensure_time(state)
 
@@ -79,11 +89,16 @@ def load_inputs_node(state: Dict[str, Any]) -> Dict[str, Any]:
     updates |= _trace_append(state, "load_inputs", {"loaded": True, "files": dict(paths)})
     return updates
 
+
+# -----------------------------
+# Node 1: parse + normalize
+# -----------------------------
 def parse_and_normalize_node(state: Dict[str, Any]) -> Dict[str, Any]:
     _ensure_time(state)
 
     raw = state.get("raw") or {}
     
+    # Use new helper from load_json.py
     parsed = {
         "mesh_report": load_json_with_comments(raw["mesh_report"]),
         "sim_config": load_json_with_comments(raw["sim_config"]),
@@ -91,12 +106,17 @@ def parse_and_normalize_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "formulas": load_json_with_comments(raw["formulas"]),
     }
 
+    # Use new helper from normalize.py
     parsed["sim_config"] = normalize_sim_config(parsed["sim_config"])
 
     updates: Dict[str, Any] = {"parsed": parsed}
     updates |= _trace_append(state, "parse_and_normalize", {"ok": True})
     return updates
 
+
+# -----------------------------
+# Node 2: CFL tool node (DO NOT crash if missing fields)
+# -----------------------------
 def compute_cfl_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
     _ensure_time(state)
 
@@ -165,6 +185,9 @@ def compute_cfl_tool_node(state: Dict[str, Any]) -> Dict[str, Any]:
         },
     }
 
+# -----------------------------
+# Node 3: deterministic metrics
+# -----------------------------
 def precompute_metrics_node(state: Dict[str, Any]) -> Dict[str, Any]:
     _ensure_time(state)
 
@@ -175,6 +198,9 @@ def precompute_metrics_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     derived = dict(state.get("derived_metrics") or {})
 
+    # -----------------------------
+    # Cost / runtime coefficients (deterministic extraction)
+    # -----------------------------
     cost_coeff = None
     runtime_coeff = None
 
@@ -203,6 +229,9 @@ def precompute_metrics_node(state: Dict[str, Any]) -> Dict[str, Any]:
             runtime_coeff = float(v)
             break
 
+    # -----------------------------
+    # Compute deterministic resource estimates (tool-grade)
+    # -----------------------------
     est = compute_resource_estimates(
         mesh_report=mesh,
         sim_config=sim,
@@ -210,6 +239,7 @@ def precompute_metrics_node(state: Dict[str, Any]) -> Dict[str, Any]:
         hours_per_m_cells_per_iter=runtime_coeff,
     )
 
+    # Do NOT clobber CFL results; only set/augment resource-related metrics.
     if est.cell_count and est.cell_count > 0:
         derived["cell_count"] = float(est.cell_count)
     else:
@@ -217,11 +247,13 @@ def precompute_metrics_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     derived["ram_gb"] = float(est.ram_gb)
 
+    # Conservative single-value estimates (equal to HIGH)
     derived["estimated_cost_usd"] = float(est.estimated_cost_usd) if est.estimated_cost_usd is not None else None
     derived["estimated_runtime_hours"] = (
         float(est.estimated_runtime_hours) if est.estimated_runtime_hours is not None else None
     )
 
+    # LOW/HIGH bounds (preferred fields for gating and for minimum required budget)
     derived["steps"] = float(est.steps) if est.steps is not None else None
     derived["iters_per_step_min"] = float(est.iters_per_step_min) if est.iters_per_step_min is not None else None
     derived["iters_per_step_max"] = float(est.iters_per_step_max) if est.iters_per_step_max is not None else None
@@ -250,6 +282,7 @@ def precompute_metrics_node(state: Dict[str, Any]) -> Dict[str, Any]:
         float(est.estimated_runtime_hours_high) if est.estimated_runtime_hours_high is not None else None
     )
 
+    # Audit metadata for deterministic debugging and LLM anchoring.
     derived["resource_missing_inputs"] = list(est.missing_inputs) if est.missing_inputs else []
     derived["resource_notes"] = list(est.notes) if est.notes else []
 
@@ -291,11 +324,15 @@ def retrieve_similar_runs_node(state: Dict[str, Any]) -> Dict[str, Any]:
         **_trace_append(state, "retrieve_similar_runs", {"top_k": len(hits), "hits": hits}),
     }
 
+# -----------------------------
+# Node 4: Phase 1 - rule-based votes (REFACTORED)
+# -----------------------------
 def phase1_agents_node(state: Dict[str, Any]) -> Dict[str, Any]:
     _ensure_time(state)
 
     votes: List[Dict[str, Any]] = []
 
+    # Instantiate and run each agent
     agents = [
         GeometerAgent(),
         PhysicistAgent(),
@@ -333,83 +370,107 @@ def debate_one_round_node(state: Dict[str, Any]) -> Dict[str, Any]:
     reject = [v for v in votes if v["vote"] == VoteType.REJECT.value]
     modify = [v for v in votes if v["vote"] == VoteType.MODIFY.value]
 
+    # 1. Grouping: Defenders vs Challengers
+    defenders = []
+    challengers = []
+
     if approve:
-        support_vote = approve[0]
+        defenders = approve
+        challengers = reject + modify
     elif modify:
-        support_vote = modify[0]
+        defenders = modify
+        challengers = reject
     else:
-        support_vote = votes[0]
+        # Everyone rejected (consensus reject) -> No debate needed
+        return {"debate_messages": []}
 
-    support_agent_name = support_vote["agent"]
-    support_agent = _get_agent_instance(support_agent_name)
-    support_prompt_sys = support_agent.load_system_prompt()
-    
-    opponents = []
-    if support_vote["vote"] == VoteType.APPROVE.value:
-        opponents = reject + modify
-    elif support_vote["vote"] == VoteType.MODIFY.value:
-        opponents = reject
-    
-    if not opponents:
-        opponents = [v for v in votes if v["agent"] != support_agent_name and v["vote"] != support_vote["vote"]]
+    # Sort for deterministic order
+    defenders.sort(key=lambda x: x["agent"])
+    challengers.sort(key=lambda x: x["agent"])
 
-    opponents.sort(key=lambda x: x["agent"])
-
-    if not opponents:
+    if not challengers:
+        # Everyone approved (consensus approve) -> No debate needed
         return {"debate_messages": []}
 
     messages: List[Dict[str, Any]] = []
 
-    p1 = f"""
-    You are in a debate. You voted {support_vote['vote']} because: "{support_vote['reason']}".
-    You are facing {len(opponents)} opponent(s): {', '.join([op['agent'] for op in opponents])}.
+    # 2. Round 1: Defenders Speak (Parallel)
+    # Each defender sees the opposition exists and states their case.
+    challenger_names = [c["agent"] for c in challengers]
     
-    Produce a short, sharp argument (max 40 words) defending your position and challenging the opponents.
-    Output plain text only.
-    """
-    try:
-        msg1_text = call_gemini(support_prompt_sys + "\n\n" + p1, temperature=0.0).strip()
-    except Exception as e:
-        msg1_text = f"(AI Error: {e}) My vote stands based on {support_vote['reason']}."
+    # We collect all defender messages first
+    defender_msgs_obj = []
 
-    m1 = DebateMessage(
-        agent=AgentName(support_agent_name),
-        stance=DebateStance.DEFEND,
-        message=msg1_text,
-        targets=[AgentName(op["agent"]) for op in opponents][:3],
-    )
-    messages.append(m1.model_dump(mode="json"))
+    for d_vote in defenders:
+        d_agent_name = d_vote["agent"]
+        d_agent = _get_agent_instance(d_agent_name)
+        d_prompt_sys = d_agent.load_system_prompt()
+        
+        # Context: Identify who is challenging and why (briefly)
+        opp_summary = "\n".join([f"- {c['agent']}: {c['vote']} ({c['reason']})" for c in challengers])
+        
+        p1 = f"""
+        You are in a debate. You voted {d_vote['vote']} because: "{d_vote['reason']}".
+        The following agents oppose you (Challengers):
+        {opp_summary}
+        
+        Produce a strong, concise argument (max 40 words) defending your position against these challenges.
+        Output ONLY plain text. DO NOT use markdown, JSON blocks, or any formatting.
+        """
+        
+        try:
+            msg_text = call_gemini(d_prompt_sys + "\n\n" + p1, temperature=0.0).strip()
+        except Exception as e:
+            msg_text = f"(AI Error: {e}) My vote stands based on {d_vote['reason']}."
+            
+        m = DebateMessage(
+            agent=AgentName(d_agent_name),
+            stance=DebateStance.DEFEND,
+            message=msg_text,
+            targets=[AgentName(n) for n in challenger_names], # target all challengers
+        )
+        defender_msgs_obj.append(m)
+        messages.append(m.model_dump(mode="json"))
 
-    for op_vote in opponents:
-        op_agent_name = op_vote["agent"]
-        op_agent = _get_agent_instance(op_agent_name)
-        op_prompt_sys = op_agent.load_system_prompt()
+    # 3. Round 2: Challengers Rebut (Parallel)
+    # Each challenger sees ALL defender messages and rebuts the collective defense.
+    
+    # Format defender arguments for the context
+    defender_context = "\n".join([f"- {m.agent}: {m.message}" for m in defender_msgs_obj])
+    defender_names = [d["agent"] for d in defenders]
+
+    for c_vote in challengers:
+        c_agent_name = c_vote["agent"]
+        c_agent = _get_agent_instance(c_agent_name)
+        c_prompt_sys = c_agent.load_system_prompt()
         
         p2 = f"""
-        You are in a debate. You voted {op_vote['vote']} because: "{op_vote['reason']}".
-        The supporter {support_agent_name} just said: "{msg1_text}".
+        You are in a debate. You voted {c_vote['vote']} because: "{c_vote['reason']}".
+        The Defenders have stated their case:
+        {defender_context}
         
-        Produce a short, sharp rebuttal (max 40 words) explaining why they are wrong and your constraint is non-negotiable.
-        Output plain text only.
+        Produce a concise rebuttal (max 40 words) addressing these points and reaffirming why your constraint is critical.
+        Output ONLY plain text. DO NOT use markdown, JSON blocks, or any formatting.
         """
+        
         try:
-            msg2_text = call_gemini(op_prompt_sys + "\n\n" + p2, temperature=0.0).strip()
+            msg_text = call_gemini(c_prompt_sys + "\n\n" + p2, temperature=0.0).strip()
         except Exception as e:
-            msg2_text = f"(AI Error: {e}) I disagree. {op_vote['reason']}"
+            msg_text = f"(AI Error: {e}) I disagree. {c_vote['reason']}"
             
-        m2 = DebateMessage(
-            agent=AgentName(op_agent_name),
+        m = DebateMessage(
+            agent=AgentName(c_agent_name),
             stance=DebateStance.ATTACK,
-            message=msg2_text,
-            targets=[AgentName(support_agent_name)],
+            message=msg_text,
+            targets=[AgentName(n) for n in defender_names], # target all defenders
         )
-        messages.append(m2.model_dump(mode="json"))
+        messages.append(m.model_dump(mode="json"))
 
     return {
         "debate_messages": messages,
         **_trace_append(state, "debate_one_round", {
-            "support": support_agent_name, 
-            "opponents": [op["agent"] for op in opponents]
+            "defenders": defender_names, 
+            "challengers": challenger_names
         }),
     }
 
@@ -422,7 +483,7 @@ def synthesize_verdict_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     method = "llm_synthesis"
     if verdict.confidence == 1.0 and not verdict.modifications_required and verdict.status == VerdictStatus.APPROVED:
-        method = "unanimous_approve"
+         method = "unanimous_approve" # Simple heuristic for tracing
     
     return {
         "final_verdict": verdict.model_dump(mode="json"),

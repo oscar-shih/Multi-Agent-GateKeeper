@@ -32,7 +32,7 @@ You must output ONLY valid JSON matching the following schema. NO markdown, NO c
 
 {
   "status": "APPROVED" | "REJECTED",
-  "confidence": <float 0.0 to 1.0>,
+  "confidence": <float 0.0 to 1.0> (Confidence in YOUR VERDICT. 1.0 = Fully confident in the decision to Approve or Reject),
   "modifications_required": [
     {
       "field": "$.path.to.field",
