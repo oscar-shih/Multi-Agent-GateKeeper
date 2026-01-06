@@ -110,8 +110,7 @@ Multi-Agent-GateKeeper/
       build.py                  # compile LangGraph
     utils/
       timebox.py                # 60 seconds
-      logging.py                # Clean trace（for Loom demo）
-      deterministic.py          # Fix seed / Sorting / Hashing
+      logging.py                # Clean trace log
 ```
 ## Environment
 ```
@@ -130,6 +129,7 @@ python -m gatekeeper.cli \
   --sim data/inputs/sim_config.json \
   --past data/inputs/past_runs.json \
   --formulas data/inputs/simulation_formulas.json \
+  --log run_base.log \
   --verbose
 ```
 ### The Impossible Job (High Accuracy, Low Budget)
@@ -139,6 +139,7 @@ python -m gatekeeper.cli  \
   --sim data/test/test_impossible_config.json \
   --past data/inputs/past_runs.json \
   --formulas data/inputs/simulation_formulas.json \
+  --log run_impossible.log \
   --verbose
 ```
 
@@ -149,6 +150,7 @@ python -m gatekeeper.cli  \
   --sim data/test/test_unstable_config.json \
   --past data/inputs/past_runs.json \
   --formulas data/inputs/simulation_formulas.json \
+  --log run_unstable.log \
   --verbose
 ```
 
@@ -159,6 +161,7 @@ python -m gatekeeper.cli  \
   --sim data/test/test_hallucination_config.json \
   --past data/inputs/past_runs.json \
   --formulas data/inputs/simulation_formulas.json \
+  --log run_hallucination.log \
   --verbose
 ```
 
