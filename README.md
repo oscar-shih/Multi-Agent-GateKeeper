@@ -62,6 +62,7 @@ Timebox: The entire chain (from Input to JSON) must execute in under 60 seconds.
 ```
 Multi-Agent-GateKeeper/
   README.md
+  pyproject.toml
   requirements.txt
   .gitignore
 
@@ -71,6 +72,10 @@ Multi-Agent-GateKeeper/
       sim_config.json
       past_runs.json
       simulation_formulas.json
+    test/
+      test_hallucination_config.json
+      test_impossible_config.json
+      test_unstable_config.json
 
   src/gatekeeper/
     __init__.py
@@ -78,14 +83,12 @@ Multi-Agent-GateKeeper/
     config.py                   # model, temperature=0, timeouts, thresholds
     schemas.py                  # Pydantic models: JobConfig, MeshReport, Votes, Verdict
     io/
-      load_json.py              # Support JSON with // comments: strip or json5
+      load_json.py              
       normalize.py              
     tools/
       cfl.py                    # compute_courant(u, dt, dx)
       cost.py                   # estimate_cost(mesh, sim, formulas)
       similarity.py             # historian mock RAG similarity (deterministic)
-    rag/
-      historian_store.py        # Read past_runs.json + top_k retrieval
     prompts/
       geometer.system.txt
       physicist.system.txt
@@ -109,11 +112,6 @@ Multi-Agent-GateKeeper/
       timebox.py                # 60 seconds
       logging.py                # Clean trace（for Loom demo）
       deterministic.py          # Fix seed / Sorting / Hashing
-
-  tests/
-    test_impossible_job.py
-    test_unstable_job.py
-    test_hallucination_job.py
 ```
 ## Environment
 ```
@@ -124,12 +122,44 @@ python -m gatekeeper.cli --help
 ```
 
 ## Testing
+
+### Given Case
 ```
 python -m gatekeeper.cli \
---mesh data/inputs/mesh_report.json \
---sim data/inputs/sim_config.json \
---past data/inputs/past_runs.json \
---formulas data/inputs/simulation_formulas.json 
+  --mesh data/inputs/mesh_report.json \
+  --sim data/inputs/sim_config.json \
+  --past data/inputs/past_runs.json \
+  --formulas data/inputs/simulation_formulas.json \
+  --verbose
+```
+### The Impossible Job (High Accuracy, Low Budget)
+```
+python -m gatekeeper.cli  \
+  --mesh data/inputs/mesh_report.json \
+  --sim data/test/test_impossible_config.json \
+  --past data/inputs/past_runs.json \
+  --formulas data/inputs/simulation_formulas.json \
+  --verbose
+```
+
+### The Unstable Job (CFL Violation)
+```
+python -m gatekeeper.cli  \
+  --mesh data/inputs/mesh_report.json \
+  --sim data/test/test_unstable_config.json \
+  --past data/inputs/past_runs.json \
+  --formulas data/inputs/simulation_formulas.json \
+  --verbose
+```
+
+### The Hallucination Job (Fake Model)
+```
+python -m gatekeeper.cli  \
+  --mesh data/inputs/mesh_report.json \
+  --sim data/test/test_hallucination_config.json \
+  --past data/inputs/past_runs.json \
+  --formulas data/inputs/simulation_formulas.json \
+  --verbose
 ```
 
 ## Note
