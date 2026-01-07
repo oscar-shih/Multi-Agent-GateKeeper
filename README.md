@@ -12,28 +12,38 @@ We cannot trust a single LLM to make these decisions because it will hallucinate
 ## The Challenge: 
 Build a Multi-Agent Orchestration System (using LangGraph, AutoGen, or CrewAI) that acts as a "Gatekeeper" for our simulation pipeline. It takes a raw job_config.json and a mesh_report.json as input, runs a structured debate, and outputs a deterministic Go/No-Go decision.
 
-## Personas: 
+## Personas & Voting Policies
 You must implement 5 distinct agents. We have provided their "Core Motivations" below. You will need to prompt them to act as adversarial stakeholders.
 
-1. The Geometer: Obsessed with geometric topology.
+1. **The Geometer**: Obsessed with geometric topology.
+   - **REJECT**: Skewness $\ge$ 0.90 (Hard constraint).
+   - **REJECT**: Orthogonal Quality < 0.10 (Hard constraint).
+   - **APPROVE**: Metrics within acceptable range.
 
-- Trigger: "This mesh has a skewness of 0.9. That is garbage. Reject."
+2. **The Physicist**: Cares about the validity of the scientific model.
+   - **REJECT**: Invalid turbulence model enum (Allowed: `k-epsilon`, `k-omega`, `Spalart-Allmaras`).
+   - **REJECT**: "Laminar" flow regime requested with velocity $\ge$ 100 m/s (Physically impossible).
+   - **APPROVE**: Valid physics configuration.
 
-2. The Physicist: Cares about the validity of the scientific model.
+3. **The Resource Manager**: Cares only about ROI (Return on Investment) and simulation runtime.
+   - **REJECT**: Estimated Cost > Budget * 1.2 (>20% overrun).
+   - **MODIFY**: Budget < Estimated Cost $\le$ Budget * 1.2 (0-20% overrun).
+   - **APPROVE**: Estimated Cost $\le$ Budget.
 
-- Trigger: "You cannot use a 'Laminar' model for a flow moving at 100m/s. That is physically impossible. Reject."
+4. **The Historian**: Has access to a mock RAG database of past runs.
+   - **REJECT**: High similarity ($\ge$ 0.95) to a past CRASHED run with **no** stabilization changes.
+   - **MODIFY**: Moderate/High similarity ($\ge$ 0.85) to a past CRASHED run.
+   - **APPROVE**: No similar crash patterns found (< 0.85 similarity).
 
-3. The Resource Manager: Cares only about ROI (Return on Investment) and simulation runtime.
+5. **The Stabilizer**: Obsessed with the CFL Condition (Courant–Friedrichs–Lewy).
+   - **REJECT**: CFL Number > Max_Allowed * 2.0 (Fundamental instability).
+   - **MODIFY**: Max_Allowed < CFL Number $\le$ Max_Allowed * 2.0 (Risky, recommends smaller dt).
+   - **APPROVE**: CFL Number $\le$ Max_Allowed.
 
-- Trigger: "This mesh has 50 million cells for a simple pipe. That will cost $400 and 5 days to run. The budget is $50. Reject."
-
-4. The Historian: Has access to a mock RAG database of past runs.
-
-- Trigger: "I am voting REJECT. This setup looks 95% similar to Job #402, which crashed. Unless you changed the relaxation factors, this will fail too."
-
-5. The Stabilizer: Obsessed with the CFL Condition (Courant–Friedrichs–Lewy).
-
-- Trigger: "The Physicist wants to run at dt=0.1s, but the Geometer made cells size dx=0.001m. At velocity u=50m/s, the Courant number is 5000. This is unstable. Reject."
+6. **The Synthesizer (Final Verdict)**:
+   - **UNANIMOUS APPROVE**: If all agents vote APPROVE.
+   - **HARD REJECT**: If *any* agent triggers a hard constraint (REJECT).
+   - **DEBATE RESOLUTION**: If agents vote MODIFY, the Synthesizer evaluates the debate trace. Strict policy enforces REJECT for unauthorized budget overruns.
 
 
 
