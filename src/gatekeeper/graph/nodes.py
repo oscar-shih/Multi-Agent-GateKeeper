@@ -358,6 +358,12 @@ def needs_debate_router(state: Dict[str, Any]) -> str:
     if not votes:
         return "synthesize_verdict"
 
+    # HARD REJECT CHECK (Fatal Error Handling)
+    # If any agent flagged a hard constraint (e.g. invalid model), skip debate.
+    for v in votes:
+        if v.get("hard_constraints_triggered"):
+            return "synthesize_verdict"
+
     unique = sorted({v["vote"] for v in votes})
     return "synthesize_verdict" if len(unique) == 1 else "debate_one_round"
 

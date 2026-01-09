@@ -9,8 +9,22 @@ class StabilizerAgent(BaseAgent):
     def vote(self, state: Dict[str, Any]) -> AgentVote:
         parsed = state["parsed"]
         formulas = parsed["formulas"]
+        sim = parsed["sim_config"]
         derived = state.get("derived_metrics") or {}
         
+        # Check time step validity first
+        ts = (sim.get("numerics") or {}).get("time_step") or {}
+        dt = float(ts.get("size", 0.0))
+        
+        if dt <= 0:
+             return AgentVote(
+                agent=self.name,
+                vote=VoteType.REJECT,
+                reason=f"Invalid time step size: {dt}. Must be positive.",
+                hard_constraints_triggered=["INVALID_TIME_STEP"],
+                modifications_required=[],
+            )
+
         cfl = derived.get("courant_number", None)
         max_allowed = None
         if isinstance((formulas.get("cfl") or {}).get("max_allowed"), (int, float)):
@@ -33,6 +47,15 @@ class StabilizerAgent(BaseAgent):
             )
         elif max_allowed is not None:
             cfl_f = float(cfl)
+            
+            if cfl_f < 0:
+                 return AgentVote(
+                    agent=self.name,
+                    vote=VoteType.REJECT,
+                    reason=f"Invalid negative Courant number: {cfl_f}. Check velocity/grid data.",
+                    hard_constraints_triggered=["INVALID_CFL_VALUE"],
+                    modifications_required=[],
+                )
             
             # Logic: Tolerance for CFL
             # 1. CFL > Max * 2.0 => Hard Reject (Way too unstable)
@@ -78,4 +101,3 @@ class StabilizerAgent(BaseAgent):
                 hard_constraints_triggered=[],
                 modifications_required=[],
             )
-
